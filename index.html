@@ -3,37 +3,53 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>USSF Constellation Prototype</title>
+    <title>USSF Constellation Route Planner</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050505; color: white; font-family: sans-serif; }
         #ui-panel {
             position: absolute; top: 20px; left: 20px;
-            background: rgba(20, 20, 20, 0.8);
+            background: rgba(20, 20, 20, 0.85);
             padding: 20px; border-radius: 8px; border: 1px solid #444;
-            width: 300px;
+            width: 320px;
+            backdrop-filter: blur(5px);
         }
-        h2 { margin-top: 0; font-size: 1.2rem; }
+        h2 { margin-top: 0; font-size: 1.2rem; border-bottom: 1px solid #555; padding-bottom: 10px; }
         .control-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-size: 0.9rem; }
-        input[type="range"] { width: 100%; }
-        .data-readout { color: #4ade80; font-weight: bold; }
+        label { display: block; margin-bottom: 5px; font-size: 0.9rem; color: #ddd;}
+        input[type="range"] { width: 100%; cursor: pointer; }
+        .data-readout { color: #fff; font-weight: bold; float: right; }
+        #status-panel {
+            margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.5); border-radius: 6px;
+            text-align: center;
+        }
+        #link-status { font-size: 1.5rem; font-weight: bold; margin-top: 5px; }
+        .connected { color: #4ade80; text-shadow: 0 0 10px #4ade80; }
+        .disconnected { color: #ff4444; text-shadow: 0 0 10px #ff4444; }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 
     <div id="ui-panel">
-        <h2>Constellation Planner</h2>
-        <div class="control-group">
-            <label>Orbital Planes: <span id="planes-val" class="data-readout">12</span></label>
-            <input type="range" id="planes-slider" min="1" max="48" value="12">
+        <h2>Mission Planner</h2>
+        
+        <div id="status-panel">
+            <div style="font-size: 0.8rem; text-transform: uppercase; color: #aaa;">Active Link Status</div>
+            <div id="link-status" class="connected">SEARCHING...</div>
         </div>
-        <div class="control-group">
-            <label>Satellites per Plane: <span id="sats-val" class="data-readout">20</span></label>
-            <input type="range" id="sats-slider" min="1" max="40" value="20">
-        </div>
-        <div class="control-group">
-            <label>Total Satellites: <span id="total-val" class="data-readout">240</span></label>
+
+        <div style="margin-top: 20px;">
+            <div class="control-group">
+                <label>Orbital Planes: <span id="planes-val" class="data-readout">24</span></label>
+                <input type="range" id="planes-slider" min="1" max="48" value="24">
+            </div>
+            <div class="control-group">
+                <label>Satellites per Plane: <span id="sats-val" class="data-readout">20</span></label>
+                <input type="range" id="sats-slider" min="1" max="40" value="20">
+            </div>
+            <div class="control-group">
+                <label>Total Constellation Size: <span id="total-val" class="data-readout">480</span></label>
+            </div>
         </div>
     </div>
 
@@ -41,70 +57,114 @@
         // 1. Scene Setup
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.z = 5;
+        camera.position.set(0, 1.5, 4);
+        camera.lookAt(0, 0, 0);
+        
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        // 2. Add Earth (Wireframe for clear geography rendering without external images)
-        const earthGeometry = new THREE.SphereGeometry(1, 32, 32);
-        const earthMaterial = new THREE.MeshBasicMaterial({ color: 0x1e40af, wireframe: true });
+        // Lighting for the Earth
+        scene.add(new THREE.AmbientLight(0x404040, 2.0));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(5, 3, 5);
+        scene.add(dirLight);
+
+        // 2. Add Earth (With Texture Fallback)
+        const earthGeometry = new THREE.SphereGeometry(1, 64, 64);
+        const earthMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x1e40af, // Fallback blue ocean color
+            roughness: 0.8, metalness: 0.1 
+        });
         const earth = new THREE.Mesh(earthGeometry, earthMaterial);
         scene.add(earth);
 
-        // 3. Constellation Logic
+        // Try to load real Earth map
+        new THREE.TextureLoader().load('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg', function(texture) {
+            earthMaterial.map = texture;
+            earthMaterial.color.setHex(0xffffff); // Remove blue tint once loaded
+            earthMaterial.needsUpdate = true;
+        });
+
+        // 3. User Plane ("The Kite") & Ground Track
+        const planeAltitude = 1.05;
+        const routeInclination = THREE.MathUtils.degToRad(65); // Steep angle to test polar gaps
+        let planeAngle = 0;
+
+        // The Kite Geometry
+        const planeGeo = new THREE.ConeGeometry(0.04, 0.12, 4);
+        planeGeo.rotateX(Math.PI / 2); // Point forward
+        const planeMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+        const airplane = new THREE.Mesh(planeGeo, planeMat);
+        scene.add(airplane);
+
+        // The Ground Track (Dashed Line)
+        const routeGeo = new THREE.BufferGeometry().setFromPoints(
+            new THREE.Path().absarc(0, 0, planeAltitude, 0, Math.PI * 2).getSpacedPoints(128)
+        );
+        const routeMat = new THREE.LineDashedMaterial({ color: 0xffaa00, dashSize: 0.05, gapSize: 0.05, opacity: 0.5, transparent: true });
+        const flightRoute = new THREE.Line(routeGeo, routeMat);
+        flightRoute.computeLineDistances();
+        flightRoute.rotation.x = routeInclination;
+        scene.add(flightRoute);
+
+        // 4. Constellation Logic
         let constellationGroup = new THREE.Group();
         scene.add(constellationGroup);
+        let activeSatellites = []; // Store to calculate handovers
 
         function generateConstellation(numPlanes, satsPerPlane) {
-            // Clear old constellation
             while(constellationGroup.children.length > 0){ 
                 constellationGroup.remove(constellationGroup.children[0]); 
             }
+            activeSatellites = [];
 
-            const altitude = 1.3; // Earth radius + orbit height
-            const inclination = THREE.MathUtils.degToRad(53); // Standard Starlink inclination
+            const altitude = 1.35; // Constellation height
+            const inclination = THREE.MathUtils.degToRad(53); // Starlink standard
+
+            const ringMat = new THREE.LineBasicMaterial({ color: 0x444444, transparent: true, opacity: 0.3 });
+            const satGeo = new THREE.SphereGeometry(0.015, 8, 8);
+            const satMat = new THREE.MeshBasicMaterial({ color: 0x4ade80 });
 
             for (let p = 0; p < numPlanes; p++) {
-                const raan = (p / numPlanes) * Math.PI * 2; // Right Ascension of Ascending Node
+                const raan = (p / numPlanes) * Math.PI * 2;
                 
-                // Create Orbital Ring (Visual path)
                 const ringGeo = new THREE.BufferGeometry().setFromPoints(
                     new THREE.Path().absarc(0, 0, altitude, 0, Math.PI * 2).getSpacedPoints(64)
                 );
-                const ringMat = new THREE.LineBasicMaterial({ color: 0x444444, transparent: true, opacity: 0.5 });
                 const ring = new THREE.Line(ringGeo, ringMat);
-                
-                // Tilt and rotate the ring
                 ring.rotation.x = inclination;
                 ring.rotation.y = raan;
                 constellationGroup.add(ring);
-
-                // Add Satellites to this plane
-                const satGeo = new THREE.SphereGeometry(0.02, 8, 8);
-                const satMat = new THREE.MeshBasicMaterial({ color: 0x4ade80 });
 
                 for (let s = 0; s < satsPerPlane; s++) {
                     const trueAnomaly = (s / satsPerPlane) * Math.PI * 2;
                     const sat = new THREE.Mesh(satGeo, satMat);
                     
-                    // Position satellite on the ring
                     sat.position.set(Math.cos(trueAnomaly) * altitude, Math.sin(trueAnomaly) * altitude, 0);
                     
-                    // Group satellite so it rotates with the plane
                     const satPivot = new THREE.Group();
                     satPivot.rotation.x = inclination;
                     satPivot.rotation.y = raan;
                     satPivot.add(sat);
                     constellationGroup.add(satPivot);
+                    
+                    activeSatellites.push(sat); // Save for distance tracking
                 }
             }
             document.getElementById('total-val').innerText = numPlanes * satsPerPlane;
         }
 
-        // 4. UI Listeners
+        // 5. Active Handover Link (The Green Line)
+        const linkGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        const linkMat = new THREE.LineBasicMaterial({ color: 0x4ade80, linewidth: 2 });
+        const activeLink = new THREE.Line(linkGeo, linkMat);
+        scene.add(activeLink);
+
+        // 6. UI Listeners
         const planesSlider = document.getElementById('planes-slider');
         const satsSlider = document.getElementById('sats-slider');
+        const statusText = document.getElementById('link-status');
 
         planesSlider.addEventListener('input', (e) => {
             document.getElementById('planes-val').innerText = e.target.value;
@@ -116,14 +176,67 @@
             generateConstellation(parseInt(planesSlider.value), parseInt(e.target.value));
         });
 
-        // Initialize default constellation
-        generateConstellation(12, 20);
+        // Initialize
+        generateConstellation(24, 20);
 
-        // 5. Animation Loop
+        // 7. Animation & Handover Loop
+        const satWorldPos = new THREE.Vector3();
+        const maxLOSDistance = 1.05; // Maximum distance for Line of Sight based on altitude curves
+
         function animate() {
             requestAnimationFrame(animate);
-            earth.rotation.y += 0.001; // Earth rotation
-            constellationGroup.rotation.y += 0.002; // Constellation orbit simulation
+            
+            // Earth & Orbit rotations
+            earth.rotation.y += 0.0005;
+            constellationGroup.rotation.y += 0.001;
+
+            // Move the User Plane (Kite)
+            planeAngle -= 0.003; 
+            const px = Math.cos(planeAngle) * planeAltitude;
+            const py = Math.sin(planeAngle) * Math.sin(routeInclination) * planeAltitude;
+            const pz = Math.sin(planeAngle) * Math.cos(routeInclination) * planeAltitude;
+            airplane.position.set(px, py, pz);
+
+            // Point plane forward
+            const nx = Math.cos(planeAngle - 0.01) * planeAltitude;
+            const ny = Math.sin(planeAngle - 0.01) * Math.sin(routeInclination) * planeAltitude;
+            const nz = Math.sin(planeAngle - 0.01) * Math.cos(routeInclination) * planeAltitude;
+            airplane.lookAt(nx, ny, nz);
+
+            // MUST update world matrix before checking satellite positions
+            scene.updateMatrixWorld();
+
+            // Calculate Handovers
+            let closestDist = Infinity;
+            let closestSatPos = new THREE.Vector3();
+
+            for(let i=0; i < activeSatellites.length; i++) {
+                activeSatellites[i].getWorldPosition(satWorldPos);
+                const dist = airplane.position.distanceTo(satWorldPos);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    closestSatPos.copy(satWorldPos);
+                }
+            }
+
+            // Update UI and Link Visuals
+            if (closestDist <= maxLOSDistance) {
+                activeLink.geometry.setFromPoints([airplane.position, closestSatPos]);
+                activeLink.visible = true;
+                
+                if(statusText.innerText !== "CONNECTED") {
+                    statusText.innerText = "CONNECTED";
+                    statusText.className = "connected";
+                }
+            } else {
+                activeLink.visible = false; // Hide link
+                
+                if(statusText.innerText !== "SIGNAL LOST") {
+                    statusText.innerText = "SIGNAL LOST";
+                    statusText.className = "disconnected";
+                }
+            }
+
             renderer.render(scene, camera);
         }
         animate();
